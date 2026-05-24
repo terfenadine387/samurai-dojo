@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 
 type Subject = "english" | "math" | "japanese";
 type Mode = "flash" | "quiz" | "drill";
@@ -20,6 +21,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<"correct" | "incorrect" | null>(null);
   const [showExplanation, setShowExplanation] = useState(false);
+  const [questionStartTime, setQuestionStartTime] = useState<number>(Date.now());
 
   // 初回、または教科・難易度が変わった時に新しい5問を取得する
   useEffect(() => {
@@ -53,9 +55,23 @@ export default function Home() {
   }, [subject, mode, difficulty]);
 
   // 回答ボタンを押した時の処理
-  const handleAnswer = (isCorrect: boolean) => {
-    // 解いた問題のIDを履歴に追加
-    if (question && question.id) {
+  const handleAnswer = async (isCorrect: boolean) => {
+    const responseTime = Date.now() - questionStartTime;
+
+    // 回答をDBに記録
+    if (question?.id) {
+      await fetch("/api/record-answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question_id: question.id,
+          subject,
+          mode,
+          difficulty,
+          is_correct: isCorrect,
+          response_time_ms: responseTime,
+        }),
+      });
       setSolvedIds((prev) => [...prev, question.id]);
     }
 
@@ -117,9 +133,15 @@ export default function Home() {
         <div className="max-w-3xl mx-auto flex justify-between items-center">
           <h1 className="text-xl font-bold text-yellow-500">受験サムライ道場</h1>
           <div className="flex gap-4 text-sm items-center">
-            <span className="text-gray-400 text-xs mr-2">残弾: {questionQueue.length}</span>
+            <span className="text-gray-400 text-xs">残弾: {questionQueue.length}</span>
             <span>🔥 {streak}連勝</span>
             <span className="text-yellow-400">★ レベル {difficulty}</span>
+            <Link
+              href="/dashboard"
+              className="bg-yellow-600/20 hover:bg-yellow-600/40 border border-yellow-600/50 text-yellow-400 text-xs px-3 py-1 rounded-full transition-colors"
+            >
+              📊 戦績
+            </Link>
           </div>
         </div>
       </header>
