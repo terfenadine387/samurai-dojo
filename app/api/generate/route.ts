@@ -16,7 +16,6 @@ export async function POST(req: Request) {
     const body = await req.json();
     const { subject, mode, difficulty, excludeIds = [] } = body;
 
-    // 1. データベースから在庫を多めに取得
     const { data: dbQuestions } = await supabase
       .from('questions')
       .select('*')
@@ -25,20 +24,16 @@ export async function POST(req: Request) {
       .eq('difficulty', difficulty)
       .limit(50);
 
-    // 2. 既に解いた問題（excludeIds）を除外する
     const availableQuestions = (dbQuestions || []).filter(
       (q) => !excludeIds.includes(q.id)
     );
 
-    // 3. もし在庫が5問以上あれば、ランダムに5問選んで即座に返す（AI不使用）
-    if (availableQuestions.length >= 5) {
+    // ★在庫が10問以上あればランダムに10問選んで返す
+    if (availableQuestions.length >= 10) {
       const shuffled = availableQuestions.sort(() => 0.5 - Math.random());
-      return NextResponse.json({ questions: shuffled.slice(0, 5), source: 'database' });
+      return NextResponse.json({ questions: shuffled.slice(0, 10), source: 'database' });
     }
 
-    // =====================================
-    // 4. 在庫がない場合、AIに「5問まとめて」生成させる
-    // =====================================
     const difficultyText = getDifficultyPrompt(difficulty);
     const subjectText = getSubjectPrompt(subject);
 
@@ -47,26 +42,25 @@ export async function POST(req: Request) {
     else if (mode === 'flash') baseSchema = flashcardSchema;
     else baseSchema = drillSchema;
 
-    // AIに「5問の配列」を作らせるようスキーマを強化
+    // ★AIに「10問」作らせるようスキーマを変更
     const batchSchema = z.object({
-      questions: z.array(baseSchema).length(5)
+      questions: z.array(baseSchema).length(10)
     });
 
     const { object: newBatch } = await generateObject({
       model: google('gemini-2.5-flash'),
       schema: batchSchema,
       prompt: `あなたは日本の中学生向け難関校受験予備校のカリスマ講師です。
-以下の条件に従って、最高の学習問題を【必ず5問】作成してください。
+以下の条件に従って、最高の学習問題を【必ず10問】作成してください。
 【教科】: ${subjectText}
 【問題形式】: ${mode}モード
 【難易度設定】: レベル${difficulty} (${difficultyText})
 注意事項：
-- 全く異なるバリエーションの問題を5種類用意すること。
+- 全く異なるバリエーションの問題を10種類用意すること。
 - 学習指導要領に準拠し、嘘を含めないこと。
 - 日本語で出力すること。`,
     });
 
-    // 5. 生成した5問をデータベースに保存
     const insertData = newBatch.questions.map((q: any) => ({
       subject,
       mode,
@@ -83,7 +77,6 @@ export async function POST(req: Request) {
 
     if (insertError) throw insertError;
     
-    // 6. 保存した5問をまとめてフロントエンドに返す
     return NextResponse.json({ questions: insertedData, source: 'ai_generated' });
 
   } catch (error) {

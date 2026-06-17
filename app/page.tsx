@@ -1,131 +1,147 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import Link from "next/link";
 
 type Subject = "english" | "math" | "japanese";
 type Mode = "flash" | "quiz" | "drill";
 
 export default function Home() {
+  const [isMounted, setIsMounted] = useState(false);
+
+  // ★ 教科ごとの進捗をオブジェクトで管理
+  const [difficulties, setDifficulties] = useState({ english: 1, math: 1, japanese: 1 });
+  const [streaks, setStreaks] = useState({ english: 0, math: 0, japanese: 0 });
+  const [wrongCounts, setWrongCounts] = useState({ english: 0, math: 0, japanese: 0 });
+
   const [subject, setSubject] = useState<Subject>("english");
   const [mode, setMode] = useState<Mode>("quiz");
-  const [difficulty, setDifficulty] = useState(1);
-  const [streak, setStreak] = useState(0);
-  const [wrongCount, setWrongCount] = useState(0);
   
-  // ★問題のストック（貯金）と、解いた履歴を管理
   const [questionQueue, setQuestionQueue] = useState<any[]>([]);
   const [solvedIds, setSolvedIds] = useState<string[]>([]);
-  
   const [question, setQuestion] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<"correct" | "incorrect" | null>(null);
   const [showExplanation, setShowExplanation] = useState(false);
-  const [questionStartTime, setQuestionStartTime] = useState<number>(Date.now());
 
-  // 初回、または教科・難易度が変わった時に新しい5問を取得する
+  // ★ 各モード専用のステート
+  const [isFlipped, setIsFlipped] = useState(false); // カードめくり用
+  const [inputText, setInputText] = useState("");     // 特訓入力用
+
+  // 1. ページを開いた時、ブラウザの保存データ(localStorage)を読み込む
   useEffect(() => {
-    const fetchNewBatch = async () => {
-      setLoading(true);
-      setFeedback(null);
-      setShowExplanation(false);
-      setQuestion(null);
-      setQuestionQueue([]); // ストックをリセット
-      
-      try {
-        const res = await fetch("/api/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          // 解いた問題のIDを送って除外してもらう
-          body: JSON.stringify({ subject, mode, difficulty, excludeIds: solvedIds }),
-        });
-        const data = await res.json();
-        
-        if (data.questions && data.questions.length > 0) {
-          setQuestion(data.questions[0]); // 最初の1問を表示
-          setQuestionQueue(data.questions.slice(1)); // 残り4問をストックに入れる
-        }
-      } catch (error) {
-        console.error("問題取得エラー", error);
-      }
-      setLoading(false);
-    };
+    setIsMounted(true);
+    const savedDiff = localStorage.getItem("samurai_difficulties");
+    const savedStreaks = localStorage.getItem("samurai_streaks");
+    const savedSubj = localStorage.getItem("samurai_subject");
+    const savedMode = localStorage.getItem("samurai_mode");
 
-    fetchNewBatch();
-  }, [subject, mode, difficulty]);
+    if (savedDiff) setDifficulties(JSON.parse(savedDiff));
+    if (savedStreaks) setStreaks(JSON.parse(savedStreaks));
+    if (savedSubj) setSubject(savedSubj as Subject);
+    if (savedMode) setMode(savedMode as Mode);
+  }, []);
 
-  // 回答ボタンを押した時の処理
-  const handleAnswer = async (isCorrect: boolean) => {
-    const responseTime = Date.now() - questionStartTime;
+  // 2. レベルや教科が変わるたびに、ブラウザに自動セーブする
+  useEffect(() => {
+    if (isMounted) {
+      localStorage.setItem("samurai_difficulties", JSON.stringify(difficulties));
+      localStorage.setItem("samurai_streaks", JSON.stringify(streaks));
+      localStorage.setItem("samurai_subject", subject);
+      localStorage.setItem("samurai_mode", mode);
+    }
+  }, [difficulties, streaks, subject, mode, isMounted]);
 
-    // 回答をDBに記録
-    if (question?.id) {
-      await fetch("/api/record-answer", {
+  const currentDiff = difficulties[subject];
+  const currentStreak = streaks[subject];
+  const currentWrong = wrongCounts[subject];
+
+  const fetchNewBatch = async () => {
+    if (!isMounted) return;
+    setLoading(true);
+    setFeedback(null);
+    setShowExplanation(false);
+    setIsFlipped(false);
+    setInputText("");
+    setQuestion(null);
+    setQuestionQueue([]);
+    
+    try {
+      const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          question_id: question.id,
-          subject,
-          mode,
-          difficulty,
-          is_correct: isCorrect,
-          response_time_ms: responseTime,
-        }),
+        body: JSON.stringify({ subject, mode, difficulty: currentDiff, excludeIds: solvedIds }),
       });
+      const data = await res.json();
+      
+      if (data.questions && data.questions.length > 0) {
+        setQuestion(data.questions[0]);
+        setQuestionQueue(data.questions.slice(1));
+      }
+    } catch (error) {
+      console.error("問題取得エラー", error);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (isMounted) fetchNewBatch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subject, mode, currentDiff, isMounted]);
+
+  const handleAnswer = (isCorrect: boolean) => {
+    if (question && question.id) {
       setSolvedIds((prev) => [...prev, question.id]);
     }
 
     if (isCorrect) {
       setFeedback("correct");
-      const newStreak = streak + 1;
-      setStreak(newStreak);
-      setWrongCount(0);
-      if (newStreak >= 3 && difficulty < 5) {
-        setDifficulty((prev) => prev + 1);
-        setStreak(0);
+      const newStreak = currentStreak + 1;
+      setStreaks(prev => ({ ...prev, [subject]: newStreak }));
+      setWrongCounts(prev => ({ ...prev, [subject]: 0 }));
+      
+      if (newStreak >= 3 && currentDiff < 5) {
+        setDifficulties(prev => ({ ...prev, [subject]: currentDiff + 1 }));
+        setStreaks(prev => ({ ...prev, [subject]: 0 }));
       }
     } else {
       setFeedback("incorrect");
-      setStreak(0);
-      const newWrong = wrongCount + 1;
-      setWrongCount(newWrong);
-      if (newWrong >= 2 && difficulty > 1) {
-        setDifficulty((prev) => prev - 1);
-        setWrongCount(0);
+      setStreaks(prev => ({ ...prev, [subject]: 0 }));
+      const newWrong = currentWrong + 1;
+      setWrongCounts(prev => ({ ...prev, [subject]: newWrong }));
+      
+      if (newWrong >= 2 && currentDiff > 1) {
+        setDifficulties(prev => ({ ...prev, [subject]: currentDiff - 1 }));
+        setWrongCounts(prev => ({ ...prev, [subject]: 0 }));
       }
     }
     setShowExplanation(true);
   };
 
-  // 「次の問題へ」ボタンを押した時の処理
+  // ★特訓モードの採点ロジック（部分一致などで判定）
+  const handleDrillSubmit = () => {
+    if (!inputText.trim()) return;
+    const answers: string[] = question.content.acceptableAnswers || [];
+    const isCorrect = answers.some((ans) => 
+      inputText.trim().toLowerCase() === ans.toLowerCase()
+    );
+    handleAnswer(isCorrect);
+  };
+
   const handleNextQuestion = async () => {
     setFeedback(null);
     setShowExplanation(false);
+    setIsFlipped(false);
+    setInputText("");
 
     if (questionQueue.length > 0) {
-      // ★ストックがあれば通信せずに一瞬で次の問題を表示！
       setQuestion(questionQueue[0]);
       setQuestionQueue((prev) => prev.slice(1));
     } else {
-      // ストックが空になったら、裏でAI通信して次の5問を取得
-      setLoading(true);
-      try {
-        const res = await fetch("/api/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ subject, mode, difficulty, excludeIds: solvedIds }),
-        });
-        const data = await res.json();
-        if (data.questions && data.questions.length > 0) {
-          setQuestion(data.questions[0]);
-          setQuestionQueue(data.questions.slice(1));
-        }
-      } catch (error) {
-        console.error("追加問題の取得エラー", error);
-      }
-      setLoading(false);
+      fetchNewBatch();
     }
   };
+
+  if (!isMounted) return null; // 初期ロード中のチラつき防止
 
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-white font-sans">
@@ -133,15 +149,9 @@ export default function Home() {
         <div className="max-w-3xl mx-auto flex justify-between items-center">
           <h1 className="text-xl font-bold text-yellow-500">受験サムライ道場</h1>
           <div className="flex gap-4 text-sm items-center">
-            <span className="text-gray-400 text-xs">残弾: {questionQueue.length}</span>
-            <span>🔥 {streak}連勝</span>
-            <span className="text-yellow-400">★ レベル {difficulty}</span>
-            <Link
-              href="/dashboard"
-              className="bg-yellow-600/20 hover:bg-yellow-600/40 border border-yellow-600/50 text-yellow-400 text-xs px-3 py-1 rounded-full transition-colors"
-            >
-              📊 戦績
-            </Link>
+            <span className="text-gray-400 text-xs mr-2">残弾: {questionQueue.length}</span>
+            <span>🔥 {currentStreak}連勝</span>
+            <span className="text-yellow-400">★ レベル {currentDiff}</span>
           </div>
         </div>
       </header>
@@ -176,12 +186,15 @@ export default function Home() {
           {loading ? (
             <div className="flex flex-col items-center justify-center space-y-4">
               <div className="w-8 h-8 border-4 border-yellow-500 border-t-transparent rounded-full animate-spin"></div>
-              <p>AIが5問の特訓メニューを作成中...</p>
+              <p>AIが10問の特訓メニューを作成中...</p>
             </div>
           ) : question ? (
             <div className="space-y-6">
-              <h2 className="text-xl md:text-2xl font-bold whitespace-pre-wrap">{question.content.questionText || question.content.front}</h2>
+              <h2 className="text-xl md:text-2xl font-bold whitespace-pre-wrap">
+                {mode === "flash" ? question.content.front : question.content.questionText}
+              </h2>
               
+              {/* 【クイズモードのUI】 */}
               {mode === "quiz" && !showExplanation && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-6">
                   {question.content.options.map((opt: string, i: number) => (
@@ -196,16 +209,69 @@ export default function Home() {
                 </div>
               )}
 
+              {/* 【カードモードのUI】 */}
+              {mode === "flash" && !showExplanation && (
+                <div className="mt-6 flex flex-col items-center">
+                  {!isFlipped ? (
+                    <button onClick={() => setIsFlipped(true)} className="w-full bg-white/10 hover:bg-white/20 border border-white/20 p-8 rounded-xl font-bold text-lg">
+                      答えを確認する（カードをめくる）
+                    </button>
+                  ) : (
+                    <div className="w-full space-y-4 animate-in fade-in zoom-in-95 duration-300">
+                      <div className="bg-black/30 p-6 rounded-xl border border-white/10">
+                        <p className="text-gray-400 text-sm mb-2">裏面（答え・解説）：</p>
+                        <p className="text-xl whitespace-pre-wrap font-bold text-yellow-400">{question.content.back}</p>
+                        {question.content.hint && <p className="mt-4 text-sm text-gray-300">💡ヒント: {question.content.hint}</p>}
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <button onClick={() => handleAnswer(true)} className="bg-green-600/80 hover:bg-green-500 p-4 rounded-xl font-bold border border-green-500/50">
+                          覚えた！（正解）
+                        </button>
+                        <button onClick={() => handleAnswer(false)} className="bg-red-600/80 hover:bg-red-500 p-4 rounded-xl font-bold border border-red-500/50">
+                          忘れた（不正解）
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 【特訓モードのUI】 */}
+              {mode === "drill" && !showExplanation && (
+                <div className="mt-6 space-y-4">
+                  <input 
+                    type="text" 
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleDrillSubmit(); }}
+                    placeholder="解答を入力してEnter..."
+                    className="w-full bg-black/50 border border-white/20 p-4 rounded-xl text-white outline-none focus:border-yellow-500 transition-colors text-lg"
+                  />
+                  <button 
+                    onClick={handleDrillSubmit}
+                    className="w-full bg-yellow-600 hover:bg-yellow-500 p-4 rounded-xl font-bold text-black"
+                  >
+                    いざ、解答！
+                  </button>
+                </div>
+              )}
+
+              {/* フィードバックと解説（全モード共通） */}
               {showExplanation && (
                 <div className="mt-6 space-y-4">
                   <div className={`p-4 rounded-xl font-bold ${feedback === "correct" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
                     {feedback === "correct" ? "⚔️ 見事！（正解）" : "🛡️ 無念…（不正解）"}
                   </div>
-                  <div className="bg-black/30 p-4 rounded-xl text-gray-300">
-                    <p className="font-bold text-white mb-2">解説：</p>
-                    <p className="whitespace-pre-wrap">{question.content.explanation || question.content.back}</p>
-                    {question.content.correctAnswer && <p className="mt-2 text-yellow-400">正解: {question.content.correctAnswer}</p>}
-                  </div>
+                  
+                  {mode !== "flash" && (
+                    <div className="bg-black/30 p-4 rounded-xl text-gray-300">
+                      <p className="font-bold text-white mb-2">解説：</p>
+                      <p className="whitespace-pre-wrap">{question.content.explanation}</p>
+                      {mode === "quiz" && <p className="mt-2 text-yellow-400">正解: {question.content.correctAnswer}</p>}
+                      {mode === "drill" && <p className="mt-2 text-yellow-400">正解: {question.content.acceptableAnswers?.join(" / ")}</p>}
+                    </div>
+                  )}
+
                   <button
                     onClick={handleNextQuestion}
                     className="w-full bg-yellow-600 hover:bg-yellow-500 text-black font-bold py-4 rounded-xl"
